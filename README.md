@@ -1,4 +1,4 @@
-# CUORE Pulse Denoiser
+# Bolometer Pulse Denoiser
 
 Generative-model-based denoising of cryogenic bolometer pulse signals from the [CUORE experiment](https://cuore.lngs.infn.it/). CUORE searches for neutrinoless double-beta decay using 988 TeO2 bolometers at ~10 mK. Each channel records voltage pulses proportional to deposited energy, contaminated by thermal and electronic noise. This project trains conditional generative models to recover clean pulse waveforms from noisy observations to improve energy resolution.
 
