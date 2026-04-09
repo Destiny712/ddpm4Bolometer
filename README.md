@@ -83,9 +83,6 @@ src/
 scripts/
   generate_clean_shards.py   - Multi-shard pulse generation
   generate_noise_shards.py   - Multi-shard noise generation
-
-data/
-  cuore_spectrum.npz         - Measured CUORE energy spectrum for sampling
 ```
 
 ## Quick Start
