@@ -89,18 +89,19 @@ def generate_noise_shard(n_windows, output_file, seed):
           f"({n_windows/elapsed:.1f} windows/s)")
 
 
-for shard in range(N_SHARDS):
-    output_file = os.path.join(OUTPUT_DIR, f'noise_{shard:03d}.h5')
-    if os.path.exists(output_file):
-        print(f"Shard {shard} already exists, skipping: {output_file}")
-        continue
+if __name__ == '__main__':
+    for shard in range(N_SHARDS):
+        output_file = os.path.join(OUTPUT_DIR, f'noise_{shard:03d}.h5')
+        if os.path.exists(output_file):
+            print(f"Shard {shard} already exists, skipping: {output_file}")
+            continue
 
-    seed = BASE_SEED + shard * 1000
-    print(f"\n{'='*60}")
-    print(f"Generating shard {shard}/{N_SHARDS}: {output_file}")
-    print(f"  Windows: {WINDOWS_PER_SHARD}, seed: {seed}")
-    print(f"{'='*60}")
+        seed = BASE_SEED + shard * 1000
+        print(f"\n{'='*60}")
+        print(f"Generating shard {shard}/{N_SHARDS}: {output_file}")
+        print(f"  Windows: {WINDOWS_PER_SHARD}, seed: {seed}")
+        print(f"{'='*60}")
 
-    generate_noise_shard(WINDOWS_PER_SHARD, output_file, seed)
+        generate_noise_shard(WINDOWS_PER_SHARD, output_file, seed)
 
-print(f"\nAll {N_SHARDS} shards complete.")
+    print(f"\nAll {N_SHARDS} shards complete.")
