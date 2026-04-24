@@ -16,9 +16,12 @@ A conditional DDPM trained on paired (clean, noisy) data:
 
 ### Diffusion Process
 
-- **Forward**: Gradually adds Gaussian noise to clean signal x_0 over T=50 steps using a quadratic beta schedule (beta_1=1e-4, beta_T=0.05).
+- **Forward**: Gradually adds Gaussian noise to clean signal x_0 over T steps using a quadratic beta schedule. Defaults are `T=50`, `beta_1=1e-4`, `beta_T=0.05`, but all three are CLI options (`--T`, `--beta_1`, `--beta_T`). Larger `beta_T` drives `alpha_bar_T` closer to zero so that x_T is a true standard Gaussian. With the default 0.05, `alpha_bar_T ≈ 0.41` — x_T retains ~40% signal, so there is a train/inference mismatch at step T (training sees signal+noise, sampling starts from pure N(0, I)). DeScoD-ECG uses `beta_T=0.5` to eliminate this gap.
 - **Reverse**: Starting from pure Gaussian noise, iteratively denoises conditioned on the noisy observation x_tilde (concatenated as a second input channel).
 - **Training objective**: Predict the noise epsilon added at each timestep. Base loss is L1 or L2 on the noise prediction, with optional spectral losses on the implied clean estimate x̂_0 (see Loss Functions below).
+- **Timestep / noise-level conditioning** (`--cond_mode`):
+  - `step` (default): the denoiser is conditioned on the integer diffusion step index `t ∈ {1, …, T}` via a sinusoidal embedding. This is the original DDPM behavior and is what all existing checkpoints were trained with.
+  - `sqrt_ab`: the denoiser is conditioned on the continuous noise level `√ᾱ` (WaveGrad / DeScoD-ECG recipe). During training, we first pick an integer step `t`, then sample `√ᾱ ~ Uniform(S_t, S_{t-1})` inside that bin of the grid `S = [1, √ᾱ_1, …, √ᾱ_T]`, and feed that scalar into the U-Net's sinusoidal embedding. Because the network sees a continuum of noise levels rather than `T` discrete points, it generalizes across schedules and tends to work better with fewer reverse steps at inference. The scalar is multiplied by `--cond_scale` (default `1000`) before the sinusoidal encoding so that values in `(0, 1]` span the full frequency grid.
 - **Inference**: Two samplers available:
   - **DDPM** (default): Full T-step stochastic reverse process. Multi-shot (M=10) aggregation of independent runs reduces variance. Supports mean or median aggregation (`--aggregation`).
   - **DDIM** (`--sampler ddim`): Deterministic reverse process (eta=0). Same trained model, no retraining needed. Supports step skipping (`--ddim_steps`) for faster inference. Partial stochasticity via `--eta` (0=deterministic, 1=DDPM-equivalent). In practice, DDPM with multi-shot averaging outperforms DDIM for this conditional denoising task — the stochasticity helps explore better solutions for low-SNR inputs.
@@ -132,6 +135,19 @@ nohup stdbuf -oL python3 -u -m src.ddpm.train \
     > /path/to/output/train.log 2>&1 & echo "PID: $!"
 ```
 
+L2 noise loss with AMP (example used for `ddpm_l2_low`, mirrors `ddpm_l1_low` except `--loss l2`):
+
+```bash
+nohup stdbuf -oL python3 -u -m src.ddpm.train \
+    --clean_dir /media/Disk_YIN/yunshancheng/cuore/clean_v2/clean_low/train \
+    --noise_dir /media/Disk_YIN/yunshancheng/cuore/noise/train \
+    --output_dir /media/Disk_YIN/yunshancheng/cuore/ddpm_l2_low \
+    --loss l2 --amp \
+    --epochs 100 --batch_size 32 --lr 2e-4 --T 50 \
+    --val_fraction 0.1 --save_every 10 --seed 42 --num_workers 4 \
+    > /media/Disk_YIN/yunshancheng/cuore/ddpm_l2_low/train.log 2>&1 & echo "PID: $!"
+```
+
 With spectral losses:
 
 ```bash
@@ -155,6 +171,20 @@ nohup stdbuf -oL python3 -u -m src.ddpm.train \
     --epochs 100 --batch_size 32 --lr 2e-4 --num_workers 4 \
     > /path/to/output/train.log 2>&1 & echo "PID: $!"
 ```
+
+DeScoD-ECG-style schedule + continuous `√ᾱ` conditioning (larger beta_T so x_T really is Gaussian, continuous noise-level embedding):
+
+```bash
+nohup stdbuf -oL python3 -u -m src.ddpm.train \
+    --clean_dir /path/to/clean \
+    --noise_dir /path/to/noise \
+    --output_dir /path/to/output \
+    --loss l1 --beta_1 1e-4 --beta_T 0.5 --cond_mode sqrt_ab \
+    --epochs 100 --batch_size 32 --lr 2e-4 --num_workers 4 \
+    > /path/to/output/train.log 2>&1 & echo "PID: $!"
+```
+
+Inference must pass the same `--beta_1`, `--beta_T`, `--cond_mode` (and `--cond_scale`, if non-default) as training.
 
 With mixed precision (AMP):
 

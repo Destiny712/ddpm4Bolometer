@@ -36,6 +36,18 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=2e-4)
     parser.add_argument('--T', type=int, default=50)
+    parser.add_argument('--beta_1', type=float, default=1e-4,
+                        help='Starting beta of the quadratic noise schedule (default: 1e-4)')
+    parser.add_argument('--beta_T', type=float, default=0.05,
+                        help='Ending beta of the quadratic noise schedule (default: 0.05). '
+                             'DeScoD-ECG uses 0.5; larger values drive alpha_bar_T closer to 0.')
+    parser.add_argument('--cond_mode', type=str, default='step',
+                        choices=['step', 'sqrt_ab'],
+                        help='Diffusion conditioning: discrete step index (default) or '
+                             'continuous sqrt(alpha_bar) noise level (WaveGrad/DeScoD-ECG).')
+    parser.add_argument('--cond_scale', type=float, default=1000.0,
+                        help='Input multiplier applied before the sinusoidal embedding when '
+                             "cond_mode='sqrt_ab'. Ignored in 'step' mode.")
     parser.add_argument('--val_fraction', type=float, default=0.1)
     parser.add_argument('--save_every', type=int, default=10,
                         help='Save checkpoint every N epochs')
@@ -101,13 +113,18 @@ def main():
     )
 
     # Model
-    schedule = DiffusionSchedule(T=args.T).to(device)
+    schedule = DiffusionSchedule(T=args.T, beta_1=args.beta_1, beta_T=args.beta_T).to(device)
+    print(f"Schedule: T={args.T}, beta_1={args.beta_1}, beta_T={args.beta_T}, "
+          f"alpha_bar_T={schedule.alpha_bar[-1].item():.4g}")
     if args.scale_cond:
         from src.ddpm.unet_cond import UNet1DScaleCond
-        model = UNet1DScaleCond().to(device)
-        print("Using scale-conditioned U-Net (UNet1DScaleCond)")
+        model = UNet1DScaleCond(cond_mode=args.cond_mode,
+                                cond_scale=args.cond_scale).to(device)
+        print(f"Using scale-conditioned U-Net (UNet1DScaleCond), cond_mode={args.cond_mode}")
     else:
-        model = UNet1D().to(device)
+        model = UNet1D(cond_mode=args.cond_mode,
+                       cond_scale=args.cond_scale).to(device)
+        print(f"Using UNet1D, cond_mode={args.cond_mode}")
 
     # Spectral loss (if any weights are nonzero)
     spec_loss = None
@@ -122,7 +139,8 @@ def main():
               f"w_lsd={args.w_lsd}, w_asd={args.w_asd}")
 
     diffusion = GaussianDiffusion(model, schedule, loss_type=args.loss,
-                                  spectral_loss=spec_loss)
+                                  spectral_loss=spec_loss,
+                                  cond_mode=args.cond_mode)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")

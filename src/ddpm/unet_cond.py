@@ -73,6 +73,11 @@ class UNet1DScaleCond(nn.Module):
         Embedding dimension for both timestep and scale.
     attn_levels : tuple
         Which encoder levels get self-attention (0-indexed).
+    cond_mode : str
+        'step' or 'sqrt_ab'. See UNet1D for details. Only affects the
+        timestep/noise-level embedding; scale embedding is unchanged.
+    cond_scale : float
+        Input multiplier used when cond_mode='sqrt_ab'.
     """
 
     def __init__(
@@ -83,20 +88,23 @@ class UNet1DScaleCond(nn.Module):
         channel_mults: tuple = (1, 2, 4, 8),
         emb_dim: int = 256,
         attn_levels: tuple = (),
+        cond_mode: str = 'step',
+        cond_scale: float = 1000.0,
     ):
         super().__init__()
         self.n_levels = len(channel_mults)
+        self.cond_mode = cond_mode
         channels = [base_channels * m for m in channel_mults]
 
-        # Timestep embedding
-        self.time_embed = SinusoidalTimestepEmbedding(emb_dim)
+        # Timestep / noise-level embedding
+        self.time_embed = SinusoidalTimestepEmbedding(emb_dim, cond_mode, cond_scale)
         self.time_mlp = nn.Sequential(
             nn.Linear(emb_dim, emb_dim * 4),
             nn.SiLU(),
             nn.Linear(emb_dim * 4, emb_dim),
         )
 
-        # Scale embedding
+        # Scale embedding (always uses raw/step-mode encoding, independent of cond_mode)
         self.scale_mlp = ScaleMLP(emb_dim)
 
         # Initial projection
@@ -178,7 +186,8 @@ class UNet1DScaleCond(nn.Module):
         ----------
         x_t : (B, 1, L) — noisy latent at step t
         x_tilde : (B, 1, L) — noisy observation (conditioning)
-        t : (B,) — timestep indices (1..T)
+        t : (B,) — step indices (1..T) if cond_mode='step',
+            continuous sqrt(alpha_bar) values if cond_mode='sqrt_ab'
         scale : (B,) — max(|noisy|) before normalization
 
         Returns

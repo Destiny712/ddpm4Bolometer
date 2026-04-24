@@ -20,14 +20,26 @@ from src.ddpm.schedule import DiffusionSchedule
 
 
 class GaussianDiffusion(nn.Module):
-    """Conditional Gaussian diffusion for signal denoising."""
+    """Conditional Gaussian diffusion for signal denoising.
+
+    cond_mode:
+        'step' — condition the denoiser on the discrete step index 1..T
+                 (original DDPM behavior).
+        'sqrt_ab' — condition on the continuous noise level sqrt(alpha_bar).
+                 During training, sqrt_ab is sampled uniformly in the bin
+                 [S_t, S_{t-1}] of the grid S = [1, sqrt_alpha_bar[0], ...,
+                 sqrt_alpha_bar[T-1]] (WaveGrad / DeScoD-ECG recipe).
+    """
 
     def __init__(self, model: nn.Module, schedule: DiffusionSchedule,
-                 loss_type: str = 'l2', spectral_loss=None):
+                 loss_type: str = 'l2', spectral_loss=None,
+                 cond_mode: str = 'step'):
         super().__init__()
+        assert cond_mode in ('step', 'sqrt_ab'), f"unknown cond_mode: {cond_mode}"
         self.model = model
         self.schedule = schedule
         self.T = schedule.T
+        self.cond_mode = cond_mode
         self.loss_fn = nn.functional.l1_loss if loss_type == 'l1' else nn.functional.mse_loss
         self.spectral_loss = spectral_loss
 
@@ -55,11 +67,32 @@ class GaussianDiffusion(nn.Module):
 
         return sqrt_ab * x_0 + sqrt_1_ab * noise
 
-    def _predict_noise(self, x_t, x_tilde, t_1indexed, scale=None):
-        """Call model with or without scale conditioning."""
+    def _predict_noise(self, x_t, x_tilde, cond, scale=None):
+        """Call model with or without scale conditioning.
+
+        `cond` is either a 1-indexed step tensor (cond_mode='step') or
+        a continuous sqrt(alpha_bar) tensor (cond_mode='sqrt_ab').
+        """
         if scale is not None:
-            return self.model(x_t, x_tilde, t_1indexed, scale)
-        return self.model(x_t, x_tilde, t_1indexed)
+            return self.model(x_t, x_tilde, cond, scale)
+        return self.model(x_t, x_tilde, cond)
+
+    def _sample_sqrt_ab(self, t: torch.Tensor) -> torch.Tensor:
+        """For cond_mode='sqrt_ab': sample continuous sqrt(alpha_bar) ~ Uniform(low, high).
+
+        Bin edges for 0-indexed step `t`:
+            high = sqrt_alpha_bar[t-1] if t > 0 else 1.0
+            low  = sqrt_alpha_bar[t]
+        (The grid S = [1, sqrt_ab[0], ..., sqrt_ab[T-1]] is decreasing.)
+        """
+        device = t.device
+        sab = self.schedule.sqrt_alpha_bar  # (T,)
+        # Build per-sample upper/lower bin edges
+        prev_sab = torch.cat([sab.new_ones(1), sab[:-1]])  # S_{t-1} in 0-indexed
+        high = prev_sab[t]
+        low = sab[t]
+        u = torch.rand(t.shape[0], device=device)
+        return low + u * (high - low)
 
     def training_loss(self, x_0: torch.Tensor,
                       x_tilde: torch.Tensor,
@@ -83,14 +116,24 @@ class GaussianDiffusion(nn.Module):
         # Sample random timesteps (0-indexed)
         t = torch.randint(0, self.T, (B,), device=device)
 
-        # Sample noise
         noise = torch.randn_like(x_0)
 
-        # Forward process
-        x_t = self.q_sample(x_0, t, noise)
+        # Determine sqrt(alpha_bar) and conditioning value for this mode
+        if self.cond_mode == 'sqrt_ab':
+            sqrt_ab_vec = self._sample_sqrt_ab(t)            # (B,) continuous
+            sqrt_1_ab_vec = torch.sqrt((1.0 - sqrt_ab_vec ** 2).clamp(min=0.0))
+            cond = sqrt_ab_vec                                # model sees float
+        else:
+            sqrt_ab_vec = self.schedule.sqrt_alpha_bar[t]
+            sqrt_1_ab_vec = self.schedule.sqrt_one_minus_alpha_bar[t]
+            cond = (t + 1).long()                             # 1-indexed step
 
-        # Predict noise (model takes 1-indexed timesteps)
-        eps_pred = self._predict_noise(x_t, x_tilde, t + 1, scale)
+        # Forward process
+        sqrt_ab = sqrt_ab_vec.view(-1, 1, 1)
+        sqrt_1_ab = sqrt_1_ab_vec.view(-1, 1, 1)
+        x_t = sqrt_ab * x_0 + sqrt_1_ab * noise
+
+        eps_pred = self._predict_noise(x_t, x_tilde, cond, scale)
 
         noise_loss = self.loss_fn(eps_pred, noise)
 
@@ -98,8 +141,6 @@ class GaussianDiffusion(nn.Module):
             return noise_loss
 
         # Compute implied x̂_0 from eps_pred (Tweedie estimate)
-        sqrt_ab = self.schedule.sqrt_alpha_bar[t].view(-1, 1, 1)
-        sqrt_1_ab = self.schedule.sqrt_one_minus_alpha_bar[t].view(-1, 1, 1)
         x0_hat = (x_t - sqrt_1_ab * eps_pred) / sqrt_ab
 
         spec_loss, loss_dict = self.spectral_loss(x0_hat, x_0)
@@ -140,10 +181,13 @@ class GaussianDiffusion(nn.Module):
         trajectory = [x_t] if return_trajectory else None
 
         for i in reversed(range(self.T)):
-            t_batch = torch.full((B,), i + 1, device=device, dtype=torch.long)
+            if self.cond_mode == 'sqrt_ab':
+                cond = self.schedule.sqrt_alpha_bar[i].expand(B)
+            else:
+                cond = torch.full((B,), i + 1, device=device, dtype=torch.long)
 
             # Predict noise
-            eps_pred = self._predict_noise(x_t, x_tilde, t_batch, scale)
+            eps_pred = self._predict_noise(x_t, x_tilde, cond, scale)
 
             # DDPM reverse step
             alpha_t = self.schedule.alpha[i]
@@ -203,9 +247,12 @@ class GaussianDiffusion(nn.Module):
 
         for i in range(len(tau)):
             t_cur = tau[i]
-            t_batch = torch.full((B,), t_cur + 1, device=device, dtype=torch.long)
+            if self.cond_mode == 'sqrt_ab':
+                cond = self.schedule.sqrt_alpha_bar[t_cur].expand(B)
+            else:
+                cond = torch.full((B,), t_cur + 1, device=device, dtype=torch.long)
 
-            eps_pred = self._predict_noise(x_t, x_tilde, t_batch, scale)
+            eps_pred = self._predict_noise(x_t, x_tilde, cond, scale)
 
             alpha_bar_t = self.schedule.alpha_bar[t_cur]
             sqrt_ab_t = self.schedule.sqrt_alpha_bar[t_cur]
