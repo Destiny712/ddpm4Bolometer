@@ -83,6 +83,11 @@ src/
 scripts/
   generate_clean_shards.py   - Multi-shard pulse generation
   generate_noise_shards.py   - Multi-shard noise generation
+  plot_trajectory_paper.py   - Paper figure: DDPM reverse-diffusion trajectory snapshots
+  plot_datasets_paper.py     - Paper figure: 4 canonical simulation datasets (time + PSD)
+  plot_denoising_paper.py    - Paper figure: deterministic DDPM denoising on the same 4 examples
+  replot_scatter.py          - Regenerate scatter plots from saved inference pickle
+                               (supports vs-SNR or vs-clean-amplitude x-axes)
 ```
 
 ## Quick Start
@@ -135,6 +140,30 @@ python3 -u -m src.flowMatching.inference \
     --clean_dir /path/to/clean/clean_001.h5 \
     --noise_dir /path/to/noise/noise_001.h5 \
     --output qa_inference.png --n 10
+```
+
+### Paper figures
+
+Reproducible paper plots live under `scripts/plot_*_paper.py`. They all write to `plots/paper/` and share a fixed set of 4 canonical (clean, noise) examples — 2 singles and 2 pileups at low + high energy — selected deterministically at seed=0.
+
+```bash
+# Reverse-diffusion trajectory snapshots (x_T → x_0 for one 40 mV pulse)
+PYTHONPATH=. python3 scripts/plot_trajectory_paper.py
+
+# Overview of the 4 canonical datasets: time domain + PSD, clean/noisy/noise
+PYTHONPATH=. python3 scripts/plot_datasets_paper.py
+
+# DDPM deterministic denoising on the same 4 examples: time + PSD, noisy vs denoised
+PYTHONPATH=. python3 scripts/plot_denoising_paper.py
+```
+
+Scatter plots from existing DDPM inference runs (no GPU needed):
+
+```bash
+PYTHONPATH=. python3 scripts/replot_scatter.py \
+    --results_pkl /path/to/inference/results.pkl \
+    --scatter_output_vs_amp /path/to/scatter_metrics_vs_amp.png \
+    --scatter_pileup_output_vs_amp /path/to/scatter_pileup_vs_amp.png
 ```
 
 ## References

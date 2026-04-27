@@ -22,36 +22,51 @@ import torch.nn as nn
 
 
 class SinusoidalTimestepEmbedding(nn.Module):
-    """Sinusoidal positional embedding for diffusion timestep."""
+    """Sinusoidal positional embedding for a diffusion conditioning scalar.
 
-    def __init__(self, dim: int):
+    Two modes (selected at construction):
+      - 'step':    input is an integer step index (1..T). No rescaling.
+      - 'sqrt_ab': input is a continuous noise level sqrt(alpha_bar) in (0, 1].
+                   Multiplied by `cond_scale` to spread small values across the
+                   sinusoidal frequency grid (WaveGrad / DeScoD-ECG style).
+    """
+
+    def __init__(self, dim: int, cond_mode: str = 'step', cond_scale: float = 1000.0):
         super().__init__()
+        assert cond_mode in ('step', 'sqrt_ab'), f"unknown cond_mode: {cond_mode}"
         self.dim = dim
+        self.cond_mode = cond_mode
+        self.cond_scale = cond_scale
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """
         Parameters
         ----------
-        t : (B,) int or float tensor, timestep indices (1..T)
+        t : (B,) — step indices (1..T) if cond_mode='step',
+                   or continuous sqrt(alpha_bar) values if cond_mode='sqrt_ab'.
 
         Returns
         -------
         emb : (B, dim)
         """
+        t_f = t.float()
+        if self.cond_mode == 'sqrt_ab':
+            t_f = t_f * self.cond_scale
         half = self.dim // 2
         freqs = torch.exp(
             -math.log(10000.0) * torch.arange(half, device=t.device, dtype=torch.float32) / half
         )
-        args = t.float().unsqueeze(1) * freqs.unsqueeze(0)  # (B, half)
+        args = t_f.unsqueeze(1) * freqs.unsqueeze(0)  # (B, half)
         return torch.cat([torch.sin(args), torch.cos(args)], dim=1)  # (B, dim)
 
 
 class TimestepMLP(nn.Module):
     """Sinusoidal embedding -> MLP -> per-block conditioning vector."""
 
-    def __init__(self, emb_dim: int = 256):
+    def __init__(self, emb_dim: int = 256, cond_mode: str = 'step',
+                 cond_scale: float = 1000.0):
         super().__init__()
-        self.embed = SinusoidalTimestepEmbedding(emb_dim)
+        self.embed = SinusoidalTimestepEmbedding(emb_dim, cond_mode, cond_scale)
         self.mlp = nn.Sequential(
             nn.Linear(emb_dim, emb_dim * 4),
             nn.SiLU(),
@@ -152,6 +167,14 @@ class UNet1D(nn.Module):
         Timestep embedding dimension.
     attn_levels : tuple
         Which encoder levels get self-attention (0-indexed).
+    cond_mode : str
+        'step' (default) — condition on integer diffusion step index 1..T.
+        'sqrt_ab' — condition on continuous sqrt(alpha_bar) noise level
+        (WaveGrad / DeScoD-ECG style).
+    cond_scale : float
+        Input multiplier applied before sinusoidal embedding when
+        cond_mode='sqrt_ab'. Spreads the (0, 1] input across the
+        sinusoidal frequency grid. Ignored when cond_mode='step'.
     """
 
     def __init__(
@@ -162,13 +185,16 @@ class UNet1D(nn.Module):
         channel_mults: tuple = (1, 2, 4, 8),
         emb_dim: int = 256,
         attn_levels: tuple = (),
+        cond_mode: str = 'step',
+        cond_scale: float = 1000.0,
     ):
         super().__init__()
         self.n_levels = len(channel_mults)
+        self.cond_mode = cond_mode
         channels = [base_channels * m for m in channel_mults]  # [64, 128, 256, 512]
 
         # Timestep embedding
-        self.time_mlp = TimestepMLP(emb_dim)
+        self.time_mlp = TimestepMLP(emb_dim, cond_mode=cond_mode, cond_scale=cond_scale)
 
         # Initial projection
         self.conv_in = nn.Conv1d(in_channels, channels[0], kernel_size=3, padding=1)
@@ -249,7 +275,8 @@ class UNet1D(nn.Module):
         ----------
         x_t : (B, 1, L) — noisy latent at step t
         x_tilde : (B, 1, L) — noisy observation (conditioning)
-        t : (B,) — timestep indices (1..T)
+        t : (B,) — step indices (1..T) if cond_mode='step',
+            continuous sqrt(alpha_bar) values if cond_mode='sqrt_ab'
 
         Returns
         -------
