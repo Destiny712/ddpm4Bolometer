@@ -65,6 +65,8 @@ def main():
     p.add_argument('--n_pileup', type=int, default=30)
     p.add_argument('--T', type=int, default=50)
     p.add_argument('--seed', type=int, default=2026)
+    p.add_argument('--no_noise', action='store_true',
+                   help='Skip per-step noise in DDPM reverse process')
     args = p.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -86,13 +88,16 @@ def main():
     indices = rng.choice(pool, size=min(args.n_pileup, len(pool)), replace=False)
     print(f"Selected {len(indices)} pileup samples from pool of {len(pool)}")
 
-    # Parameter bounds (print once)
-    print(f"\nFit parameter bounds (9 params for pileup):")
-    print(f"  B     in (-inf, +inf)")
-    print(f"  A_i   in [0, +inf)")
-    print(f"  t0_i  in [0, 10] s")
-    print(f"  tau_r in [{_TAU_R_MIN*1e3:.1f}, {_TAU_R_MAX*1e3:.1f}] ms")
-    print(f"  tau_d in [{_TAU_D_MIN*1e3:.1f}, {_TAU_D_MAX*1e3:.1f}] ms")
+    # Parameter bounds (print once). Pileup model: 10 params total
+    # (B fixed, t01 fixed, shared tau_r/tau_d1/tau_d2; per-pulse A, alpha; t02).
+    print(f"\nFit parameter bounds (tri-exp pileup, 10 params):")
+    print(f"  B      fixed = mean(signal[:1500])")
+    print(f"  t01    fixed = 1.5 s")
+    print(f"  A_i    in [0, 2.0] V")
+    print(f"  alpha  in [0.01, 0.99]")
+    print(f"  t02    in [t01+0.01, t01+2.0] s")
+    print(f"  tau_r  in [{_TAU_R_MIN*1e3:.1f}, {_TAU_R_MAX*1e3:.1f}] ms")
+    print(f"  tau_d1 in [{_TAU_D_MIN*1e3:.1f}, {_TAU_D_MAX*1e3:.1f}] ms")
 
     # Denoise + fit each pileup sample
     entries = []  # list of dicts with fits and signals
@@ -101,9 +106,11 @@ def main():
         scale = scale.item()
         x_noisy_dev = x_noisy.unsqueeze(0).to(device)
 
-        x_single_norm = diffusion.sample(x_noisy_dev).squeeze().cpu().numpy()
+        x_single_norm = diffusion.sample(
+            x_noisy_dev, stochastic=not args.no_noise).squeeze().cpu().numpy()
         x_multi_norm = diffusion.sample_multi_shot(
-            x_noisy_dev, M=10, aggregation='mean').squeeze().cpu().numpy()
+            x_noisy_dev, M=10, aggregation='mean',
+            stochastic=not args.no_noise).squeeze().cpu().numpy()
 
         x_clean_np = x_clean.squeeze().numpy() * scale
         x_noisy_np = x_noisy.squeeze().numpy() * scale
@@ -151,12 +158,14 @@ def main():
             print(f"  [{src:6s}]{flag}  chi2/ndf={fr.chi2_per_ndf:.4e}  "
                   f"success={fr.success}")
             print(f"      B = {fr.baseline*1e3:+.4f} mV")
-            for i, (A, t0, tr, td, tp) in enumerate(zip(
+            for i, (A, t0, tr, td1, td2, a, tp) in enumerate(zip(
                     fr.peak_amps, fr.onset_times, fr.tau_r,
-                    fr.tau_d, fr.peak_times)):
+                    fr.tau_d, fr.tau_d2, fr.alpha, fr.peak_times)):
                 print(f"      P{i+1}: A={A*1e3:+8.3f} mV  t0={t0:7.3f} s  "
-                      f"tau_r={tr*1e3:6.1f} ms  tau_d={td*1e3:6.1f} ms  "
                       f"t_peak={tp:7.3f} s")
+                print(f"          tau_r={tr*1e3:6.1f} ms  "
+                      f"tau_d1={td1*1e3:6.1f} ms  "
+                      f"tau_d2={td2*1e3:6.1f} ms  alpha={a:.3f}")
 
     # Plot: rows = failing windows, cols = (clean, noisy, 1-shot, 10-shot)
     n_rows = len(failed)
@@ -189,13 +198,15 @@ def main():
             ax.legend(fontsize=6, loc='upper right')
             ax.grid(True, alpha=0.3)
 
-            # Best-fit param text box
+            # Best-fit param text box (tri-exp: tau_r + tau_d1 + tau_d2 + alpha)
             param_lines = [f"B = {fr.baseline*1e3:+.2f} mV"]
-            for i, (A, t0, tr, td) in enumerate(zip(
-                    fr.peak_amps, fr.onset_times, fr.tau_r, fr.tau_d)):
+            for i, (A, t0, tr, td1, td2, a) in enumerate(zip(
+                    fr.peak_amps, fr.onset_times, fr.tau_r,
+                    fr.tau_d, fr.tau_d2, fr.alpha)):
                 param_lines.append(
                     f"P{i+1}: A={A*1e3:+.2f} mV  t0={t0:.3f} s\n"
-                    f"    tau_r={tr*1e3:.1f} ms  tau_d={td*1e3:.0f} ms"
+                    f"    tau_r={tr*1e3:.1f} ms  alpha={a:.2f}\n"
+                    f"    tau_d1={td1*1e3:.0f} ms  tau_d2={td2*1e3:.0f} ms"
                 )
             ax.text(0.98, 0.02, '\n'.join(param_lines),
                     transform=ax.transAxes, fontsize=6,

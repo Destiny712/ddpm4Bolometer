@@ -66,12 +66,12 @@ class DetectorParams:
 # Truncated Gaussian distributions: (mean, sigma, lower_bound, upper_bound)
 # None means no bound on that side.
 PARAM_DISTS = {
-    'R0':      (0.548,    0.15,    0.0,  None),
-    'T0':      (7.18,     0.40,    0.0,  None),
-    'lambda0': (7.9e-9,   5.9e-9,  0.0,  None),
-    'q':       (-33.0,    10.0,    None, None),
-    'g_ec':    (0.098,    0.072,   0.0,  None),
-    'a_ec':    (5.43,     0.38,    5.0,  6.0),
+    'R0':      (0.622,    0.053,    0.0,  None),
+    'T0':      (6.770,    0.007,    0.0,  None),
+    'lambda0': (2.7e-9,   1.4e-9,  0.0,  None),
+    'q':       (-32.0,    10.0,    None, None),
+    'g_ec':    (0.059,    0.002,   0.0,  None),
+    'a_ec':    (5.34,     0.06,    5.0,  6.0),
     'C_p':     (512e-12,  18e-12,  0.0,  None),
     'T_base':  (0.012,    0.002,   0.0,  None),
 }
